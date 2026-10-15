@@ -1,0 +1,905 @@
+---
+title: "Statistics for FHD Phase II Trial"
+author: Christine Bui
+format: html
+editor: visual
+---
+
+## 1. Introduction
+
+### 1.1 Background
+
+Focal hand dystonia (FHD) is a rare neurological disorder characterized by involuntary muscle contractions during skilled hand movements such as writing or playing a musical instrument. Currently, there are no disease-modifying treatments available for FHD, and symptomatic therapies, such as botulinum toxin injections, offer limited and temporary relief.
+
+Repetitive transcranial magnetic stimulation (rTMS) is a noninvasive brain stimulation technology that regulates cortical excitability. While FDA-approved for psychiatric disorders, there has been evidence suggesting therapeutic potential for movement disorders.
+
+Previously, our research group demonstrated that a single session of 10 Hz rTMS applied to the primary somatosensory cortex (PSC) produced clinically meaningful improvements in motor behavior in FHD patients, with effect sizes among the highest reported for TMS. These promising findings provided the rationale for the current Phase II trial examining an accelerated protocol for four rTMS sessions delivered in a single day.
+
+### 1.2 Study Objectives
+
+The primary objective of this study is to evaluate the clinical benefit of four sessions of 10 Hz rTMS delivered to the PSC in a single day compared to sham stimulation in individuals with FHD.
+
+## 2. Design & Methodology
+
+### 2.1 Study Design
+
+This study implemented a double-blind, randomized crossover design. Participants received both active 10 Hz rTMS and sham stimulation in random order, with a washout period between interventions. The crossover design can maximize statistical power given the rarity of FHD and can control for inter-individual variability by using each participant as their own control.
+
+### 2.2 Participants
+
+The CONSORT diagram shows a total of 55 individuals expressing interest in the study. After initial screening, 36 completed the pre-screening questions, and 30 completed the REDCap survey. Twenty-one participants enrolled in the study, including 2 healthy controls who were excluded from the treatment analysis. The final analysis sample consisted of 17 FHD participants with available kinematic writing data.
+
+### 2.3 Kinematic Outcome Measures
+
+Participants copied a holoalphabetic sentence ten times on a digital writing tablet using a pressure-sensitive pen. Kinematic data were recorded and analyzed using MovAlyzer software. For each trial, multiple kinematic features were extracted.
+
+Based on a previous PCA analysis conducted by our group, three kinematic measures were identified as primary outcomes of interest, which were number of peak acceleration points, average velocity, and pen down duration. For the purpose of this analysis, number of peak acceleration points was designated as the primary outcome measure while average velocity and pen down duration were considered secondary outcomes.
+
+## 3. Results
+
+```{r}
+#| echo: false
+#| include: false
+
+# Loading necessary libraries
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(gt)
+library(gtsummary)
+library(patchwork)
+library(moments)
+library(broom.mixed)
+library(readxl)
+library(car)
+library(nlme)
+```
+
+```{r}
+#| echo: false
+#| include: false
+
+# Read in data
+df <- read_excel("C:/Users/chris/Box/AccelDys/Team Folders/Christine_Bui/Mastersheets/Stats_finalsheets/TMS_FHD/Kin_Mastersheet _continuous_26.02.27.xlsx", sheet = "finaldata")
+
+
+df <- df %>%
+  mutate(
+    # Component 1 (from first part of equation)
+    PC1 = (0.325 * NumberOfPeakAccelerationPoints) + 
+          (0.755 * RelativePenDownDuration) + 
+          (0.569 * AverageAbsoluteVelocity),
+    
+    # Component 2 (from second part of equation)  
+    PC2 = (0.803 * NumberOfPeakAccelerationPoints) + 
+          (0.098 * RelativePenDownDuration) - 
+          (0.588 * AverageAbsoluteVelocity),
+    
+    # Create a combined score weighted by variance explained
+    # PC1 explains 45.6%, PC2 explains 37.8% (from your second file)
+    Combined_PC = (0.456 * PC1 + 0.378 * PC2) / (0.456 + 0.378)  # Divide by total variance (83.4%)
+  )
+
+# Define kinematic measures of interest
+kinematic_vars <- c("Duration", "VerticalSize", "PeakVerticalVelocity", 
+                    "PeakVerticalAcceleration", "HorizontalSize", "StraightnessError", 
+                    "Slant", "RelativeInitialSlant", "RelativeTimeToPeakVerticalVelocity",
+                    "RelativePenDownDuration", "AbsoluteSize", "AverageAbsoluteVelocity", 
+                    "Roadlength", "AbsoluteyJerk", "NormalizedyJerk", 
+                    "AverageNormalizedyJerkPerTrial", "AbsoluteJerk", "NormalizedJerk",
+                    "AverageNormalizedJerkPerTrial", "Score", "NumberOfPeakAccelerationPoints",
+                    "AveragePenPressure")
+
+# Define key outcomes
+key_outcomes <- c("NumberOfPeakAccelerationPoints", "RelativePenDownDuration", "AverageAbsoluteVelocity")
+
+# NOW define all outcomes (original + composites)
+all_outcomes <- c(
+  "NumberOfPeakAccelerationPoints",
+  "AverageAbsoluteVelocity",
+  "RelativePenDownDuration",
+  "Combined_PC"
+)
+
+# Create labels for tables
+outcome_labels <- c(
+  "NumberOfPeakAccelerationPoints" = "Peak Acceleration Points",
+  "AverageAbsoluteVelocity" = "Average Velocity",
+  "RelativePenDownDuration" = "Pen Down Duration",
+  "Combined_PC" = "Combined PC")
+```
+
+```{r}
+#| echo: false
+#| include: false
+
+
+# For Baseline and PreTMS: average across trials AND average the two timepoints
+baseline_combined <- df %>%
+  # Keep only Baseline and PreTMS timepoints
+  filter(Timepoint %in% c("Baseline", "PreTMS")) %>%
+  # Group by SubjectID and TMS arm (NOT by trial)
+  group_by(SubjectID, `TMS arm`) %>%
+  summarise(
+    # Average across ALL trials (1-10 for each timepoint, and across both timepoints)
+    across(all_of(all_outcomes), ~mean(.x, na.rm = TRUE)),
+    .groups = 'drop'
+  ) %>%
+  # Add a new Timepoint column called "Baseline"
+  mutate(
+    Timepoint = "Baseline",
+    Trial = NA,  # No trial number for combined baseline
+    Time_numeric = 0
+  )
+
+# For post-treatment data: keep all trials separate
+post_data <- df %>%
+  filter(Timepoint %in% c("PostTMS_4weeks", "PostTMS_12weeks", "PostTMS_20weeks")) %>%
+  select(SubjectID, `TMS arm`, Timepoint, Trial, all_of(all_outcomes)) %>%
+  mutate(
+    Time_numeric = case_when(
+      Timepoint == "PostTMS_4weeks" ~ 4,
+      Timepoint == "PostTMS_12weeks" ~ 12,
+      Timepoint == "PostTMS_20weeks" ~ 20,
+      TRUE ~ NA_real_
+    )
+  )
+
+# Combine baseline (one row per subject) with post data (multiple rows per subject)
+df_final <- bind_rows(baseline_combined, post_data) %>%
+  arrange(SubjectID, `TMS arm`, Time_numeric, Trial) %>%
+  mutate(
+    `TMS arm` = factor(`TMS arm`, levels = c("A", "B")),
+    Timepoint = factor(Timepoint, levels = c("Baseline", "PostTMS_4weeks", "PostTMS_12weeks", "PostTMS_20weeks"))
+  )
+```
+
+### 3.1 Descriptive Statistics
+
+```{r}
+# DESCRIPTIVE STATISTICS TABLE - CLEAN VERSION
+
+# First, filter out subjects with missing TMS arm
+df_final_clean <- df_final %>%
+  filter(!is.na(`TMS arm`))
+
+# Create mapping for publication-ready timepoint names
+timepoint_labels <- c(
+  "Baseline" = "Baseline",
+  "PostTMS_4weeks" = "Post TMS - 4 Weeks",
+  "PostTMS_12weeks" = "Post TMS - 12 Weeks",
+  "PostTMS_20weeks" = "Post TMS - 20 Weeks"
+)
+
+# Define outcomes in desired order (3 original first, then Combined PC)
+outcome_names <- c(
+  "NumberOfPeakAccelerationPoints" = "Peak Acceleration Points",
+  "AverageAbsoluteVelocity" = "Average Velocity",
+  "RelativePenDownDuration" = "Pen Down Duration",
+  "Combined_PC" = "Combined PC"
+)
+
+# Calculate descriptive stats
+desc_stats_list <- list()
+
+for(outcome in names(outcome_names)) {
+  
+  temp <- df_final_clean %>%
+    group_by(`TMS arm`, Timepoint) %>%
+    summarise(
+      mean_val = mean(.data[[outcome]], na.rm = TRUE),
+      sd_val = sd(.data[[outcome]], na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    mutate(
+      mean_val = round(mean_val, 2),
+      sd_val = round(sd_val, 2),
+      formatted = sprintf("%.2f (%.2f)", mean_val, sd_val),
+      Outcome = outcome_names[outcome]
+    ) %>%
+    select(`TMS arm`, Timepoint, Outcome, formatted)
+  
+  desc_stats_list[[outcome]] <- temp
+}
+
+# Alternative using case_when instead of recode
+desc_stats <- bind_rows(desc_stats_list) %>%
+  filter(`TMS arm` %in% c("A", "B")) %>%
+  mutate(
+    Timepoint_clean = case_when(
+      Timepoint == "Baseline" ~ "Baseline",
+      Timepoint == "PostTMS_4weeks" ~ "Post TMS - 4 Weeks",
+      Timepoint == "PostTMS_12weeks" ~ "Post TMS - 12 Weeks",
+      Timepoint == "PostTMS_20weeks" ~ "Post TMS - 20 Weeks",
+      TRUE ~ as.character(Timepoint)
+    ),
+    Timepoint_clean = factor(Timepoint_clean, 
+                             levels = c("Baseline", "Post TMS - 4 Weeks", 
+                                        "Post TMS - 12 Weeks", "Post TMS - 20 Weeks"))
+  ) %>%
+  pivot_wider(
+    id_cols = c(Timepoint_clean, Outcome),
+    names_from = `TMS arm`,
+    values_from = formatted,
+    names_prefix = "Arm "
+  ) %>%
+  arrange(Timepoint_clean, match(Outcome, outcome_names))
+
+# Display the table
+desc_stats %>%
+  gt(rowname_col = "Outcome", groupname_col = "Timepoint_clean") %>%
+  cols_label(
+    `Arm A` = "Arm A",
+    `Arm B` = "Arm B"
+  ) %>%
+  tab_header(
+    title = "Table 1. Descriptive Statistics for Key Kinematic Measures",
+    subtitle = "Mean (SD) by Timepoint and TMS Arm"
+  ) %>%
+  tab_footnote(
+    footnote = "Baseline represents average of original Baseline and PreTMS timepoints",
+    locations = cells_row_groups(groups = "Baseline")
+  ) %>%
+  sub_missing(columns = everything(), missing_text = "—") %>%
+  opt_row_striping()
+```
+
+In Table 1, descriptive statistics are analyzed for the three key kinematic outcomes, stratified by TMS arm (A vs. B) and timepoint (Baseline, Pre TMS, Post TMS - 4 Weeks, Post TMS - 12 Weeks, and Post TMS - 20 Weeks). At baseline, prior to randomization, values are reported for all participants combined. For all subsequent timepoints, results are presented separately for Arm A and Arm B.
+
+Arm A demonstrated a trend toward decreasing peak acceleration points over time following TMS, while Arm B remained relatively stable. Average velocity showed modest divergence between arms, with Arm A increasing and Arm B decreasing slightly. Pen down duration remained stable across both arms and all timepoints. These patterns suggest potential differential effects of the TMS interventions on writing kinematics, which will be formally tested in the mixed effects models.
+
+### 3.2 Exploring the Data through Visual
+
+```{r}
+# Prepare data for Baseline vs 20 weeks comparison
+# First, ensure you have the clean data with combined baseline
+pre_post_20wk <- df_final_clean %>%
+  filter(Timepoint %in% c("Baseline", "PostTMS_20weeks")) %>%
+  select(SubjectID, `TMS arm`, Timepoint, all_of(names(outcome_names))) %>%
+  mutate(
+    Timepoint = factor(Timepoint, levels = c("Baseline", "PostTMS_20weeks")),
+    Timepoint_clean = ifelse(Timepoint == "Baseline", "Baseline", "20 Weeks")
+  )
+
+# Reshape to long format
+pre_post_long <- pre_post_20wk %>%
+  pivot_longer(cols = all_of(names(outcome_names)),
+               names_to = "Measure",
+               values_to = "Value") %>%
+  mutate(
+    Measure_clean = case_when(
+      Measure == "NumberOfPeakAccelerationPoints" ~ "Peak Acceleration Points",
+      Measure == "AverageAbsoluteVelocity" ~ "Average Velocity",
+      Measure == "RelativePenDownDuration" ~ "Pen Down Duration",
+      Measure == "Combined_PC" ~ "Combined PC",
+      TRUE ~ Measure
+    )
+  )
+
+# Calculate group means and standard errors for bar plot
+bar_data <- pre_post_long %>%
+  group_by(`TMS arm`, Timepoint_clean, Measure_clean) %>%
+  summarise(
+    mean_val = mean(Value, na.rm = TRUE),
+    se_val = sd(Value, na.rm = TRUE) / sqrt(n()),
+    .groups = 'drop'
+  )
+
+# Create bar plot function
+create_bar_plot <- function(measure_name, data) {
+  
+  plot_data <- data %>% filter(Measure_clean == measure_name)
+  
+  ggplot(plot_data, aes(x = Timepoint_clean, y = mean_val, fill = `TMS arm`)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+    geom_errorbar(aes(ymin = mean_val - se_val, ymax = mean_val + se_val),
+                  position = position_dodge(width = 0.8), width = 0.2, size = 0.8) +
+    scale_fill_manual(values = c("A" = "#E69F00", "B" = "#56B4E9")) +
+    labs(title = measure_name,
+         x = "",
+         y = "Mean Value (±SE)") +
+    theme_minimal() +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+          axis.text.x = element_text(size = 11),
+          axis.title.y = element_text(size = 10))
+}
+
+# Create bar plots for all 4 measures
+measures_to_plot <- c("Peak Acceleration Points", "Average Velocity", "Pen Down Duration", "Combined PC")
+
+bar_plot_list <- list()
+for(meas in measures_to_plot) {
+  bar_plot_list[[meas]] <- create_bar_plot(meas, bar_data)
+}
+
+# Combine plots in a 2x2 grid
+combined_bar <- wrap_plots(bar_plot_list, ncol = 2) +
+  plot_annotation(
+    title = "Figure 1. Baseline vs 20 Weeks Post-TMS",
+    subtitle = "Group mean ± SE",
+    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+                  plot.subtitle = element_text(hjust = 0.5, size = 11))
+  ) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+# Display the plot
+combined_bar
+```
+
+### 3.4 Normality
+
+```{r}
+#| warning: false
+#| echo: false
+
+# Define outcomes (including Combined PC)
+key_outcomes <- c(
+  "NumberOfPeakAccelerationPoints",
+  "AverageAbsoluteVelocity", 
+  "RelativePenDownDuration",
+  "Combined_PC"
+)
+
+# Labels for display
+outcome_labels <- c(
+  "NumberOfPeakAccelerationPoints" = "Peak Acceleration Points",
+  "AverageAbsoluteVelocity" = "Average Velocity", 
+  "RelativePenDownDuration" = "Pen Down Duration",
+  "Combined_PC" = "Combined PC"
+)
+
+# Calculate skewness using df_final_clean
+skewness_values <- df_final_clean %>%
+  select(all_of(key_outcomes)) %>%
+  summarise(across(everything(), ~skewness(.x, na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "Outcome", values_to = "skew")
+
+
+# Create histograms using df_final_clean
+plot_list <- list()
+for(outcome in key_outcomes) {
+  
+  skew_val <- skewness_values$skew[skewness_values$Outcome == outcome]
+  
+  # Determine color based on skewness
+  color_val <- ifelse(abs(skew_val) > 1, "darkred", 
+                      ifelse(abs(skew_val) > 0.5, "orange", "darkgreen"))
+  
+  p <- ggplot(df_final_clean, aes(x = .data[[outcome]])) +
+    geom_histogram(aes(y = after_stat(density)), 
+                   bins = 25, 
+                   fill = "steelblue", 
+                   color = "white", 
+                   alpha = 0.8) +
+    geom_density(color = color_val, size = 1) +
+    labs(title = outcome_labels[outcome],
+         subtitle = paste("Skewness:", round(skew_val, 2)),
+         x = "", y = "Density") +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+          plot.subtitle = element_text(hjust = 0.5, size = 10, color = color_val))
+  
+  plot_list[[outcome]] <- p
+}
+
+# Combine histograms in a 2x2 grid
+combined_hist <- wrap_plots(plot_list, ncol = 2) +
+  plot_annotation(
+    title = "Figure 3. Distribution of Kinematic Outcome Measures",
+    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+                  plot.subtitle = element_text(hjust = 0.5, size = 10))
+  )
+
+combined_hist
+```
+
+Prior to conducting mixed effects models, we assessed distributional properties of the three key kinematic outcomes. Normality was evaluated using both histograms with overlaid density curves and calculation of skewness statistics. These assessments inform whether transformations may be necessary to meet the assumptions of linear mixed models.
+
+Skewness values for each outcome measure were calculated, with values interpreted according to established guidelines (\|skewness\| \< 0.5 = approximately normal; 0.5-1.0 = moderately skewed; \> 1.0 = highly skewed). In contrast to the other two measures, pen down duration exhibited approximately normal distributional properties (skewness = 0.25). The histogram shows a symmetric distribution centered around 0.65-0.70, with the density curve closely approximating a normal distribution. This suggests that the proportion of time spent with pen contact during writing trials was relatively consistent across participants and trials, without the extreme values observed for the other kinematic measures.
+
+For highly skewed variables, transformations such as natural logarithm or square root are often recommend to normalize distributions and improve model fit. However, transformations can complicate clinical interpretations of results.
+
+### 3.3 Mixed Effects for Repeated Measures Analysis
+
+```{r}
+#| echo: false
+
+# Create log-transformed versions of skewed variables
+df_final_clean <- df_final_clean %>%
+  mutate(
+    # Log transformation for skewed variables (add small constant to handle zeros)
+    PeakAccel_log = log(NumberOfPeakAccelerationPoints + 1),
+    AvgVel_log = log(AverageAbsoluteVelocity + 1),
+    CombinedPC_log = log(Combined_PC + 1)
+  )
+
+# Verify skewness after transformation
+skewness_check <- df_final_clean %>%
+  summarise(
+    PeakAccel_original = skewness(NumberOfPeakAccelerationPoints, na.rm = TRUE),
+    PeakAccel_log = skewness(PeakAccel_log, na.rm = TRUE),
+    AvgVel_original = skewness(AverageAbsoluteVelocity, na.rm = TRUE),
+    AvgVel_log = skewness(AvgVel_log, na.rm = TRUE),
+    CombinedPC_original = skewness(Combined_PC, na.rm = TRUE),
+    CombinedPC_log = skewness(CombinedPC_log, na.rm = TRUE)
+  )
+
+#print(skewness_check)
+```
+
+```{r}
+#| echo: false
+
+# MODEL 1: Peak Acceleration Points (Log-transformed)
+model1_data <- df_final_clean %>%
+  filter(!is.na(PeakAccel_log), 
+         !is.na(`TMS arm`), 
+         !is.na(Time_numeric)) %>%
+  mutate(
+    SubjectID = factor(SubjectID),
+    TMS_arm = factor(`TMS arm`, levels = c("A", "B")),
+    Time_continuous = Time_numeric
+  ) %>%
+  droplevels()
+
+model1 <- lme(fixed = PeakAccel_log ~ Time_continuous * TMS_arm,
+              random = ~ 1 | SubjectID,
+              correlation = corCompSymm(form = ~ 1 | SubjectID),
+              data = model1_data,
+              method = "REML",
+              na.action = na.omit,
+              control = lmeControl(opt = "optim"))
+
+summary_model1 <- summary(model1)
+results1 <- data.frame(
+  Outcome = "Peak Acceleration Points (log)",
+  term = rownames(summary_model1$tTable),
+  estimate = summary_model1$tTable[, "Value"],
+  std.error = summary_model1$tTable[, "Std.Error"],
+  df = summary_model1$tTable[, "DF"],
+  statistic = summary_model1$tTable[, "t-value"],
+  p.value = summary_model1$tTable[, "p-value"]
+) %>%
+  mutate(
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error
+  )
+
+
+# MODEL 2: Average Velocity (Log-transformed)
+model2_data <- df_final_clean %>%
+  filter(!is.na(AvgVel_log), 
+         !is.na(`TMS arm`), 
+         !is.na(Time_numeric)) %>%
+  mutate(
+    SubjectID = factor(SubjectID),
+    TMS_arm = factor(`TMS arm`, levels = c("A", "B")),
+    Time_continuous = Time_numeric
+  ) %>%
+  droplevels()
+
+model2 <- lme(fixed = AvgVel_log ~ Time_continuous * TMS_arm,
+              random = ~ 1 | SubjectID,
+              correlation = corCompSymm(form = ~ 1 | SubjectID),
+              data = model2_data,
+              method = "REML",
+              na.action = na.omit,
+              control = lmeControl(opt = "optim"))
+
+summary_model2 <- summary(model2)
+results2 <- data.frame(
+  Outcome = "Average Velocity (log)",
+  term = rownames(summary_model2$tTable),
+  estimate = summary_model2$tTable[, "Value"],
+  std.error = summary_model2$tTable[, "Std.Error"],
+  df = summary_model2$tTable[, "DF"],
+  statistic = summary_model2$tTable[, "t-value"],
+  p.value = summary_model2$tTable[, "p-value"]
+) %>%
+  mutate(
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error
+  )
+
+# MODEL 3: Pen Down Duration (No transformation needed)
+model3_data <- df_final_clean %>%
+  filter(!is.na(RelativePenDownDuration), 
+         !is.na(`TMS arm`), 
+         !is.na(Time_numeric)) %>%
+  mutate(
+    SubjectID = factor(SubjectID),
+    TMS_arm = factor(`TMS arm`, levels = c("A", "B")),
+    Time_continuous = Time_numeric
+  ) %>%
+  droplevels()
+
+model3 <- lme(fixed = RelativePenDownDuration ~ Time_continuous * TMS_arm,
+              random = ~ 1 | SubjectID,
+              correlation = corCompSymm(form = ~ 1 | SubjectID),
+              data = model3_data,
+              method = "REML",
+              na.action = na.omit,
+              control = lmeControl(opt = "optim"))
+
+summary_model3 <- summary(model3)
+results3 <- data.frame(
+  Outcome = "Pen Down Duration",
+  term = rownames(summary_model3$tTable),
+  estimate = summary_model3$tTable[, "Value"],
+  std.error = summary_model3$tTable[, "Std.Error"],
+  df = summary_model3$tTable[, "DF"],
+  statistic = summary_model3$tTable[, "t-value"],
+  p.value = summary_model3$tTable[, "p-value"]
+) %>%
+  mutate(
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error
+  )
+
+# MODEL 4: Combined PC (Log-transformed)
+model4_data <- df_final_clean %>%
+  filter(!is.na(CombinedPC_log), 
+         !is.na(`TMS arm`), 
+         !is.na(Time_numeric)) %>%
+  mutate(
+    SubjectID = factor(SubjectID),
+    TMS_arm = factor(`TMS arm`, levels = c("A", "B")),
+    Time_continuous = Time_numeric
+  ) %>%
+  droplevels()
+
+model4 <- lme(fixed = CombinedPC_log ~ Time_continuous * TMS_arm,
+              random = ~ 1 | SubjectID,
+              correlation = corCompSymm(form = ~ 1 | SubjectID),
+              data = model4_data,
+              method = "REML",
+              na.action = na.omit,
+              control = lmeControl(opt = "optim"))
+
+summary_model4 <- summary(model4)
+results4 <- data.frame(
+  Outcome = "Combined PC (log)",
+  term = rownames(summary_model4$tTable),
+  estimate = summary_model4$tTable[, "Value"],
+  std.error = summary_model4$tTable[, "Std.Error"],
+  df = summary_model4$tTable[, "DF"],
+  statistic = summary_model4$tTable[, "t-value"],
+  p.value = summary_model4$tTable[, "p-value"]
+) %>%
+  mutate(
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error
+  )
+```
+
+```{r}
+# Combine all results
+all_results <- bind_rows(results1, results2, results3, results4)
+
+# Format results - focus on key terms
+final_results <- all_results %>%
+  filter(term %in% c("Time_continuous", "TMS_armB", "Time_continuous:TMS_armB")) %>%
+  mutate(
+    term = case_when(
+      term == "Time_continuous" ~ "Time (weeks)",
+      term == "TMS_armB" ~ "TMS Arm (B vs A)",
+      term == "Time_continuous:TMS_armB" ~ "Time × TMS Arm Interaction",
+      TRUE ~ term
+    ),
+    across(c(estimate, std.error, statistic), ~round(., 3)),
+    conf.low = round(conf.low, 3),
+    conf.high = round(conf.high, 3),
+    p.value = case_when(
+      p.value < 0.001 ~ "<0.001",
+      p.value < 0.01 ~ "<0.01",
+      p.value < 0.05 ~ "<0.05",
+      TRUE ~ sprintf("%.3f", p.value)
+    ),
+    CI = sprintf("[%.3f, %.3f]", conf.low, conf.high)
+  ) %>%
+  select(Outcome, term, estimate, std.error, CI, statistic, p.value)
+
+# Create gt table
+final_results %>%
+  gt(groupname_col = "Outcome") %>%
+  cols_label(
+    term = "Fixed Effect",
+    estimate = "Estimate",
+    std.error = "SE",
+    CI = "95% CI",
+    statistic = "t-value",
+    p.value = "p-value"
+  ) %>%
+  tab_header(
+    title = "Table 2. Mixed Effects Model Results",
+    subtitle = "Effects of TMS on Key Kinematic Measures | Log transformation applied to Peak Acceleration, Average Velocity, and Combined PC"
+  ) %>%
+  tab_style(
+    style = list(cell_fill(color = "#E8F5E9")),
+    locations = cells_body(
+      columns = p.value,
+      rows = p.value %in% c("<0.05", "<0.01", "<0.001")
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "Models include random intercept and compound symmetry correlation structure",
+    locations = cells_title(groups = "subtitle")
+  ) %>%
+  tab_footnote(
+    footnote = "Log transformation: log(x + 1) to normalize skewed distributions",
+    locations = cells_body(
+      columns = Outcome,
+      rows = Outcome %in% c("Peak Acceleration", "Average Velocity", "Combined PC")
+    )
+  ) %>%
+  opt_row_striping()
+```
+
+To evaluate the effect of TMS on kinematic writing measures over time, we fitted linear mixed effects models with compound symmetry correlation structure for each of the three key outcomes: peak acceleration points, average velocity, and pen down duration. Each model included fixed effects for time (weeks from TMS), TMS arm (B vs. A), and their interaction (time × TMS arm), with a random intercept for each subject to account for within-subject correlation due to repeated measurements.
+
+For peak acceleration points, the primary outcome, the model revealed that while the time × arm interaction did not achieve statistical significance, the direction of the effect suggests that Arm A may have experienced a greater reduction in peak acceleration points over time relative to Arm B. This pattern is consistent with the descriptive statistics, which showed Arm A decreasing from 341.0 at pre-TMS to 273.6 at 20 weeks, while Arm B remained relatively stable (349.8 to 340.8).
+
+For average velocity, the significant interaction indicates that the effect of TMS on average velocity was dependent on time and treatment arm. Examination of the descriptive statistics reveals that Arm A increased from 2.47 mm/s at pre-TMS to 2.81 mm/s at 20 weeks, while Arm B decreased from 2.80 mm/s to 2.56 mm/s over the same period. This divergence suggests that the intervention received by Arm A (active TMS first, followed by sham) may have led to sustained improvements in writing speed, whereas Arm B (sham first, followed by active) did not show similar benefits. The magnitude of this effect is clinically meaningful, representing approximately a 14% increase in Arm A versus a 9% decrease in Arm B over the 20-week period.
+
+For pen down duration, the model revealed that although the interaction reached statistical significance, the magnitude of the effect is very small (0.001 per week), representing a clinically negligible change. Over the 20-week follow-up, this would translate to a difference of approximately 0.02 between arms, which is unlikely to be clinically meaningful. Both arms maintained pen down duration values between 0.66 and 0.71 throughout the study, indicating that the proportion of time spent with pen contact during writing was stable and unaffected by TMS in a clinically meaningful way.
+
+### 3.4 Paired T-test Analysis
+
+```{r}
+#| echo: false
+
+# PAIRED T-TESTS ON CHANGE SCORES
+# Step 1: Average across trials for each subject at each timepoint
+df_trial_avg <- df_final_clean %>%
+  group_by(SubjectID, `TMS arm`, Timepoint) %>%
+  summarise(
+    # Original scales
+    PeakAccel = mean(NumberOfPeakAccelerationPoints, na.rm = TRUE),
+    AvgVel = mean(AverageAbsoluteVelocity, na.rm = TRUE),
+    PenDown = mean(RelativePenDownDuration, na.rm = TRUE),
+    CombinedPC = mean(Combined_PC, na.rm = TRUE),
+    # Log-transformed scales
+    PeakAccel_log = mean(PeakAccel_log, na.rm = TRUE),
+    AvgVel_log = mean(AvgVel_log, na.rm = TRUE),
+    CombinedPC_log = mean(CombinedPC_log, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Step 2: Calculate change scores (20 weeks - Baseline)
+change_scores <- df_trial_avg %>%
+  # Filter to Baseline and 20 weeks only
+  filter(Timepoint %in% c("Baseline", "PostTMS_20weeks")) %>%
+  # Pivot to wide format
+  pivot_wider(
+    id_cols = c(SubjectID, `TMS arm`),
+    names_from = Timepoint,
+    values_from = c(PeakAccel, AvgVel, PenDown, CombinedPC,
+                    PeakAccel_log, AvgVel_log, CombinedPC_log)
+  ) %>%
+  # Calculate change scores
+  mutate(
+    # Original scales
+    PeakAccel_change = PeakAccel_PostTMS_20weeks - PeakAccel_Baseline,
+    AvgVel_change = AvgVel_PostTMS_20weeks - AvgVel_Baseline,
+    PenDown_change = PenDown_PostTMS_20weeks - PenDown_Baseline,
+    CombinedPC_change = CombinedPC_PostTMS_20weeks - CombinedPC_Baseline,
+    
+    # Log-transformed scales
+    PeakAccel_log_change = PeakAccel_log_PostTMS_20weeks - PeakAccel_log_Baseline,
+    AvgVel_log_change = AvgVel_log_PostTMS_20weeks - AvgVel_log_Baseline,
+    CombinedPC_log_change = CombinedPC_log_PostTMS_20weeks - CombinedPC_log_Baseline
+  ) %>%
+  select(SubjectID, `TMS arm`, ends_with("_change"))
+
+# Step 3: Perform t-tests comparing change between arms
+t_test_results <- data.frame()
+
+# Define outcomes to test
+t_test_outcomes <- c(
+  "PeakAccel_change", "PeakAccel_log_change",
+  "AvgVel_change", "AvgVel_log_change", 
+  "PenDown_change",
+  "CombinedPC_change", "CombinedPC_log_change"
+)
+
+outcome_labels_ttest <- c(
+  "PeakAccel_change" = "Peak Acceleration Points (original)",
+  "PeakAccel_log_change" = "Peak Acceleration Points (log)",
+  "AvgVel_change" = "Average Velocity (original)",
+  "AvgVel_log_change" = "Average Velocity (log)",
+  "PenDown_change" = "Pen Down Duration",
+  "CombinedPC_change" = "Combined PC (original)",
+  "CombinedPC_log_change" = "Combined PC (log)"
+)
+
+for(outcome in t_test_outcomes) {
+  
+  # Extract change scores for each arm
+  armA_changes <- change_scores %>% 
+    filter(`TMS arm` == "A") %>% 
+    pull(!!outcome)
+  
+  armB_changes <- change_scores %>% 
+    filter(`TMS arm` == "B") %>% 
+    pull(!!outcome)
+  
+  # Perform t-test
+  t_test <- t.test(armA_changes, armB_changes)
+  
+  # Store results
+  t_test_results <- rbind(t_test_results, data.frame(
+    Outcome = outcome_labels_ttest[outcome],
+    Mean_Change_A = mean(armA_changes, na.rm = TRUE),
+    SD_Change_A = sd(armA_changes, na.rm = TRUE),
+    Mean_Change_B = mean(armB_changes, na.rm = TRUE),
+    SD_Change_B = sd(armB_changes, na.rm = TRUE),
+    Mean_Difference = t_test$estimate[1] - t_test$estimate[2],
+    t_statistic = t_test$statistic,
+    df = t_test$parameter,
+    p_value = t_test$p.value,
+    CI_lower = t_test$conf.int[1],
+    CI_upper = t_test$conf.int[2]
+  ))
+}
+
+# Format t-test results
+t_test_results <- t_test_results %>%
+  mutate(
+    across(c(Mean_Change_A, SD_Change_A, Mean_Change_B, SD_Change_B, 
+             Mean_Difference, t_statistic, df, CI_lower, CI_upper), ~round(., 3)),
+    p_value = case_when(
+      p_value < 0.001 ~ "<0.001",
+      p_value < 0.01 ~ "<0.01",
+      p_value < 0.05 ~ "<0.05",
+      TRUE ~ sprintf("%.3f", p_value)
+    )
+  )
+```
+
+```{r}
+#| echo: false
+
+# Create t-test table with all 4 outcomes
+t_test_clean <- t_test_results %>%
+  # Keep log-transformed for skewed variables, original for Pen Down
+  filter(Outcome %in% c("Peak Acceleration Points (log)", 
+                        "Average Velocity (log)", 
+                        "Pen Down Duration",
+                        "Combined PC (log)")) %>%
+  mutate(
+    # Format CI as single string
+    CI = sprintf("%.3f, %.3f", CI_lower, CI_upper),
+    # Round mean difference
+    Mean_Difference = round(Mean_Difference, 3),
+    # Format p-value
+    p_value_clean = case_when(
+      p_value == "<0.001" ~ "<0.001",
+      p_value == "<0.01" ~ "<0.01",
+      p_value == "<0.05" ~ "<0.05",
+      TRUE ~ sprintf("%.3f", as.numeric(p_value))
+    )
+  ) %>%
+  select(Outcome, Mean_Difference, CI, p_value_clean)
+
+# Display clean table
+t_test_clean %>%
+  gt() %>%
+  tab_header(
+    title = "Table 3. Change Score Differences Between Arms",
+    subtitle = "Independent samples t-test comparing 20-week change scores (Arm A vs Arm B)"
+  ) %>%
+  cols_label(
+    Outcome = "Outcome",
+    Mean_Difference = "Mean Difference (A - B)",
+    CI = "95% CI",
+    p_value_clean = "p-value"
+  ) %>%
+  tab_style(
+    style = list(cell_fill(color = "#E8F5E9")),
+    locations = cells_body(
+      columns = p_value_clean,
+      rows = p_value_clean %in% c("<0.05", "<0.01", "<0.001")
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "Log transformation applied to Peak Acceleration Points, Average Velocity, and Combined PC",
+    locations = cells_body(
+      rows = Outcome %in% c("Peak Acceleration Points (log)", "Average Velocity (log)", "Combined PC (log)")
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "Negative difference indicates greater improvement in Arm A compared to Arm B",
+    locations = cells_body(
+      rows = Outcome %in% c("Peak Acceleration Points (log)", "Combined PC (log)")
+    )
+  ) %>%
+  opt_row_striping()
+```
+
+```{r}
+#| warning: false
+#| echo: false
+
+# Prepare change score data for plotting
+change_plot_data <- change_scores %>%
+  # Select log-transformed outcomes (what you used in t-tests)
+  select(SubjectID, `TMS arm`, 
+         PeakAccel_log_change, AvgVel_log_change, 
+         PenDown_change, CombinedPC_log_change) %>%
+  # Rename for cleaner plotting
+  rename(
+    "Peak Acceleration Points" = PeakAccel_log_change,
+    "Average Velocity" = AvgVel_log_change,
+    "Pen Down Duration" = PenDown_change,
+    "Combined PC" = CombinedPC_log_change
+  ) %>%
+  # Pivot to long format for faceting
+  pivot_longer(cols = -c(SubjectID, `TMS arm`),
+               names_to = "Outcome",
+               values_to = "Change_Score") %>%
+  # Add interpretation note
+  mutate(
+    Outcome = factor(Outcome, levels = c("Peak Acceleration Points", "Average Velocity", 
+                                         "Pen Down Duration", "Combined PC")),
+    # For plotting: jitter points slightly to avoid overlap
+    jitter_x = ifelse(`TMS arm` == "A", 0.8, 1.2)
+  )
+
+# Create change score plot
+change_plot <- ggplot(change_plot_data, aes(x = `TMS arm`, y = Change_Score, fill = `TMS arm`)) +
+  # Boxplot (shows distribution)
+  geom_boxplot(alpha = 0.5, width = 0.5, outlier.shape = NA) +
+  # Individual points (shows each subject)
+  geom_jitter(width = 0.15, height = 0, alpha = 0.7, size = 2.5, shape = 21, color = "black") +
+  # Zero line (no change reference)
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40", size = 0.8) +
+  # Group means (large diamond)
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 4, color = "black") +
+  scale_fill_manual(values = c("A" = "#E69F00", "B" = "#56B4E9")) +
+  facet_wrap(~Outcome, scales = "free_y", ncol = 2) +
+  labs(
+    title = "Figure 2. Change Scores from Baseline to 20 Weeks Post-TMS",
+    subtitle = "(+) change = increase; (-) change = decrease | Large diamonds = group mean | Dotted line = no change",
+    x = "TMS Arm",
+    y = "Change Score (20 weeks - Baseline)",
+    fill = "TMS Arm"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 10),
+    strip.text = element_text(face = "bold", size = 11),
+    axis.title = element_text(size = 11)
+  )
+
+change_plot
+```
+
+## 4. Discussion
+
+### 4.1 Conclusion
+
+Overall, these findings suggest that the TMS intervention sequence received by Arm A (active first, then sham) was associated with improvements in writing kinematics, particularly increased writing velocity, compared to the reverse sequence received by Arm B. The lack of significant findings for peak acceleration points, despite descriptive trends, may reflect the high variability in this measure and the limited statistical power of this Phase II trial. These effect size estimates will be valuable for planning a adequately powered Phase III trial.
+
+### 4.2 Limitations
+
+Several limitations should be considered when interpreting the findings of this study.
+
+The small sample size, while reasonable for a Phase II trial investigating a rare disorder, it limits statistical power to detect small to moderate effect sizes. The trend-level finding for the time × arm interaction in peak acceleration points (p = 0.063) may reflect insufficient power rather than absence of a true effect. The wide confidence intervals observed for several estimates, particularly for peak acceleration points, indicate imprecision that could be addressed in a larger trial. Additionally, finidngs may not generalize well to other FHD populations.
+
+As with any longitudinal study, participant attrition and data available occurred over the 20-week follow-up period. While mixed effects models are robust to missing data under the missing at random (MAR) assumption, we cannot rule out the possibility that dropout was related to unobserved factors or treatment response. However, attrition was balanced between arms, reducing the likelihood of systematic bias.
+
+Age and sex were planned covariates in the statistical analysis plan but were not available in the current dataset. While these factors are unlikely to substantially influence the primary findings given the randomized design, their inclusion in future analyses would provide additional precision and control for potential confounding.
+
+Lastly, the crossover design, while statistically efficient, introduces potential complexities including carryover effects and period effects. While a washout period was incorporated to minimize carryover, the possibility of residual effects cannot be entirely excluded.
+
+### 4.3 Next Steps
+
+The findings from this Phase II trial generate several important directions for future research.
+
+While this current analysis focused on three key outcomes identified through PCA, the full dataset contains 22 kinematic measures that may provide additional insights into treatment effects. Future analyses will extend mixed effects modeling to all the 22 measures to identify which specific aspects of writing kinematics are most responsive to TMS.
+
+Age and sex were planned covariates but were not available in the current dataset. Future analyses should merge the kinematic data with demographic information to adjust for potential confounding by age and sex and explore whether treatment effects differ by demographic.
